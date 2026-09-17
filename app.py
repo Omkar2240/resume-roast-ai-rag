@@ -6,19 +6,29 @@ from datetime import datetime
 from typing import List
 from pydantic import BaseModel
 import streamlit as st
-
-
-from dotenv import load_dotenv
 from pypdf import PdfReader
 from google import genai
 from google.genai import types
 
-load_dotenv()
 
+def get_client():
+    """Return a cached genai.Client for the current session's API key.
 
-client = genai.Client(
-    api_key=os.getenv("GEMINI_API_KEY")
-)
+    The client is stored in st.session_state so the same instance (and its
+    underlying HTTP connection pool) is reused across all calls within a
+    session, avoiding 'client has been closed' errors.
+    """
+    api_key = st.session_state.get("api_key", "").strip()
+    if not api_key:
+        st.error("⚠️ Please enter your Gemini API key in the sidebar to continue.")
+        st.stop()
+
+    # Re-create only when the key changes
+    if st.session_state.get("_client_key") != api_key:
+        st.session_state["_client"] = genai.Client(api_key=api_key)
+        st.session_state["_client_key"] = api_key
+
+    return st.session_state["_client"]
 
 
 CHAT_MODEL = "gemini-3.5-flash-lite"
@@ -67,7 +77,7 @@ def chunk_text(text, size=150, overlap=30):
 
 def create_embeddings(texts, task_type):
 
-    result = client.models.embed_content(
+    result = get_client().models.embed_content(
         model=EMBED_MODEL,
         contents=texts,
         config=types.EmbedContentConfig(
@@ -259,7 +269,7 @@ Rules:
 - Return valid JSON only."""
 
 
-    response = client.models.generate_content(
+    response = get_client().models.generate_content(
         model=CHAT_MODEL,
         contents=prompt,
         config=types.GenerateContentConfig(
@@ -293,6 +303,29 @@ st.set_page_config(
 )
 
 
+# ── Sidebar: API key input ──────────────────────────────────────────────────
+with st.sidebar:
+    st.header("🔑 API Key")
+    api_key_input = st.text_input(
+        "Enter your Gemini API key",
+        type="password",
+        placeholder="AIza…",
+        help="Get a free key at https://aistudio.google.com/apikey",
+    )
+    if api_key_input:
+        st.session_state["api_key"] = api_key_input
+        st.success("API key saved ✅")
+    else:
+        st.session_state.pop("api_key", None)
+        st.info("Paste your Gemini API key above to get started.")
+
+    st.markdown(
+        "---\n"
+        "Get a free key at [Google AI Studio](https://aistudio.google.com/apikey)."
+    )
+# ────────────────────────────────────────────────────────────────────────────
+
+
 st.title("🔥 Resume Roast AI")
 st.write("Upload your resume. Let AI judge your career decisions.")
 
@@ -308,6 +341,10 @@ resume_file = st.file_uploader("Upload Resume", type=["pdf"])
 
 
 if st.button("🔥 Roast My Resume", type="primary"):
+    if not st.session_state.get("api_key", "").strip():
+        st.warning("⚠️ Please enter your Gemini API key in the sidebar first.")
+        st.stop()
+
     if not resume_file:
         st.warning("Please upload your resume.")
         st.stop()

@@ -1,6 +1,7 @@
 import os
 import math
 import json
+import hashlib
 from datetime import datetime
 from typing import List
 from pydantic import BaseModel
@@ -66,7 +67,6 @@ def chunk_text(text, size=150, overlap=30):
 
 def create_embeddings(texts, task_type):
 
-
     result = client.models.embed_content(
         model=EMBED_MODEL,
         contents=texts,
@@ -100,20 +100,62 @@ def similarity(a, b):
     return dot / (mag_a * mag_b)
 
 
+CACHE_FILE = "knowledge_cache.json"
+
+
+def _file_hash(path):
+    """Return MD5 hash of a file's contents."""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        h.update(f.read())
+    return h.hexdigest()
+
+
+@st.cache_resource(show_spinner=False)
 def load_knowledge():
+    """Load knowledge base embeddings, using a disk cache when possible.
 
+    The cache (knowledge_cache.json) is invalidated automatically whenever
+    resume_guidelines.txt or jokes.txt changes (detected via MD5 hash).
+    """
 
-    guidelines = read_file("resume_guidelines.txt")
+    guidelines_path = "resume_guidelines.txt"
+    jokes_path = "jokes.txt"
 
+    current_hashes = {
+        "guidelines": _file_hash(guidelines_path),
+        "jokes": _file_hash(jokes_path),
+    }
 
-    jokes = read_file("jokes.txt")
+    # --- Try loading from disk cache ---
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, "r", encoding="utf-8") as f:
+            cached = json.load(f)
 
+        if cached.get("hashes") == current_hashes:
+            return (
+                cached["guidelines"],
+                cached["guideline_vectors"],
+                cached["jokes"],
+                cached["joke_vectors"],
+            )
+
+    # --- Cache miss: compute embeddings and save ---
+    guidelines = read_file(guidelines_path)
+    jokes = read_file(jokes_path)
 
     guideline_vectors = create_embeddings(guidelines, "RETRIEVAL_DOCUMENT")
-
-
     joke_vectors = create_embeddings(jokes, "RETRIEVAL_DOCUMENT")
 
+    cache_data = {
+        "hashes": current_hashes,
+        "guidelines": guidelines,
+        "guideline_vectors": guideline_vectors,
+        "jokes": jokes,
+        "joke_vectors": joke_vectors,
+    }
+    with open(CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache_data, f)
 
     return (
         guidelines,
@@ -292,7 +334,7 @@ if st.button("🔥 Roast My Resume", type="primary"):
         chunk_vectors = create_embeddings(chunks, "RETRIEVAL_QUERY")
 
 
-    # 4. LOAD KNOWLEDGE
+    # 4. LOAD KNOWLEDGE (served from disk cache if unchanged)
     with st.spinner("📚 Loading resume knowledge..."):
         (
             guidelines,
